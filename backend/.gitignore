@@ -1,0 +1,17 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Environment variables — NEVER commit this
+.env
+
+# ChromaDB local data
+chroma_db/
+
+# Node / React
+node_modules/
+dist/
+
+# OS files
+.DS_Store
