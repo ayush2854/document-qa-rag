@@ -1,5 +1,7 @@
 import { useState } from 'react'
 
+const API_URL = 'https://document-qa-rag-1p15.onrender.com'
+
 function App() {
   const [file, setFile] = useState<File | null>(null)
   const [uploading, setUploading] = useState(false)
@@ -23,7 +25,7 @@ function App() {
     formData.append('file', file)
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/upload', {
+      const response = await fetch(`${API_URL}/upload`, {
         method: 'POST',
         body: formData,
       })
@@ -42,7 +44,7 @@ function App() {
 
     setAsking(true)
     try {
-      const response = await fetch('http://127.0.0.1:8000/ask', {
+      const response = await fetch(`${API_URL}/ask`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: question }),
