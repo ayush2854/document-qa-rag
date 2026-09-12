@@ -36,6 +36,10 @@ def health_check():
 
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
+    # Fix 1: Reject non-PDF files early
+    if not file.filename.lower().endswith(".pdf"):
+        return {"error": "Only PDF files are supported."}
+
     temp_path = f"temp_{file.filename}"
     with open(temp_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
@@ -44,6 +48,11 @@ async def upload_pdf(file: UploadFile = File(...)):
     full_text = ""
     for page in reader.pages:
         full_text += page.extract_text() or ""
+
+    # Fix 2: Handle empty or unreadable PDFs
+    if not full_text.strip():
+        os.remove(temp_path)
+        return {"error": "No readable text found in this PDF. It may be a scanned image."}
 
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
     chunks = splitter.split_text(full_text)
@@ -87,7 +96,17 @@ async def ask_question(question: Question):
         query_embeddings=[query_embedding],
         n_results=3
     )
-    retrieved_chunks = results["documents"][0]
+    
+    # Safely get retrieved chunks
+    retrieved_chunks = results["documents"][0] if results["documents"] and len(results["documents"]) > 0 else []
+
+    # Fix 3: Handle questions when the database is empty
+    if not retrieved_chunks:
+        return {
+            "question": question.query,
+            "answer": "No documents have been uploaded yet. Please upload a PDF first.",
+            "chunks_used": []
+        }
 
     # Step 3: build a prompt using the retrieved chunks as context
     context = "\n\n".join(retrieved_chunks)

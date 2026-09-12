@@ -58,10 +58,10 @@ function App() {
   }
 
   return (
-    <div style={{ padding: '2rem', maxWidth: '600px', margin: '0 auto' }}>
+    <div className="container">
       <h1>Document Q&A</h1>
 
-      <div style={{ marginBottom: '1.5rem' }}>
+      <div className="section">
         <h2>1. Upload a PDF</h2>
         <input type="file" accept=".pdf" onChange={handleFileChange} />
         <button onClick={handleUpload} disabled={!file || uploading} style={{ marginLeft: '1rem' }}>
@@ -77,7 +77,7 @@ function App() {
         )}
       </div>
 
-      <div>
+      <div className="section">
         <h2>2. Ask a question</h2>
         <input
           type="text"
@@ -90,7 +90,7 @@ function App() {
           {asking ? 'Thinking...' : 'Ask'}
         </button>
         {answer && (
-          <div style={{ marginTop: '1rem' }}>
+          <div className="answer-box">
             {answer.error ? (
               <p>{answer.error}</p>
             ) : (
