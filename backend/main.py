@@ -1,14 +1,25 @@
 from fastapi import FastAPI, UploadFile, File
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
 from google import genai
 from pydantic import BaseModel
 import chromadb
-import shutil, os
+import shutil
+import os
 
 load_dotenv()
 app = FastAPI()
+
+# Configure CORS Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Set up the Gemini client and a persistent ChromaDB store
 gemini_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
