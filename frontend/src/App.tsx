@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-const API_URL = 'https://document-qa-rag-1p15.onrender.com'
+const API_URL = import.meta.env.VITE_API_URL
 
 function App() {
   const [file, setFile] = useState<File | null>(null)
@@ -102,10 +102,14 @@ function App() {
               ) : (
                 <>
                   <p className="text-sm text-gray-800"><span className="font-medium">Answer:</span> {answer.answer}</p>
-                  <details className="mt-2">
-                    <summary className="text-xs text-gray-500 cursor-pointer">Chunks used ({answer.chunks_used.length})</summary>
-                    {answer.chunks_used.map((chunk: string, i: number) => (
-                      <p key={i} className="text-xs text-gray-500 mt-1">{chunk}</p>
+                  
+                  <details className="mt-3">
+                    <summary className="text-xs text-gray-500 cursor-pointer font-medium">Sources ({answer.sources?.length || 0})</summary>
+                    {answer.sources?.map((source: any, i: number) => (
+                      <div key={i} className="text-xs text-gray-600 mt-2 border-l-2 border-blue-200 pl-2">
+                        <span className="font-semibold">{source.filename}, page {source.page}</span>
+                        <p className="mt-0.5 text-gray-500">{source.text}</p>
+                      </div>
                     ))}
                   </details>
                 </>
