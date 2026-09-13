@@ -1,121 +1,159 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
 const API_URL = import.meta.env.VITE_API_URL
 
-function App() {
-  const [file, setFile] = useState<File | null>(null)
-  const [uploading, setUploading] = useState(false)
-  const [uploadResult, setUploadResult] = useState<any>(null)
+interface Message {
+  role: 'user' | 'assistant'
+  text: string
+  sources?: { filename: string; page: number; text: string }[]
+}
 
+function App() {
+  const [documents, setDocuments] = useState<string[]>([])
+  const [messages, setMessages] = useState<Message[]>([])
   const [question, setQuestion] = useState('')
   const [asking, setAsking] = useState(false)
-  const [answer, setAnswer] = useState<any>(null)
+  const [uploading, setUploading] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) setFile(e.target.files[0])
+  const fetchDocuments = async () => {
+    try {
+      const response = await fetch(`${API_URL}/documents`)
+      const data = await response.json()
+      setDocuments(data.documents)
+    } catch (error) {
+      console.error('Failed to fetch documents:', error)
+    }
   }
 
-  const handleUpload = async () => {
+  useEffect(() => {
+    fetchDocuments()
+  }, [])
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
     if (!file) return
+
     setUploading(true)
     const formData = new FormData()
     formData.append('file', file)
+
     try {
       const response = await fetch(`${API_URL}/upload`, { method: 'POST', body: formData })
-      setUploadResult(await response.json())
-    } catch {
-      setUploadResult({ error: 'Upload failed. Check console.' })
+      const data = await response.json()
+      if (data.error) {
+        alert(data.error)
+      } else {
+        await fetchDocuments()
+      }
+    } catch (error) {
+      console.error('Upload failed:', error)
+      alert('Upload failed. Check console.')
     } finally {
       setUploading(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
     }
   }
 
   const handleAsk = async () => {
     if (!question.trim()) return
+
+    const userMessage: Message = { role: 'user', text: question }
+    setMessages((prev) => [...prev, userMessage])
+    setQuestion('')
     setAsking(true)
+
     try {
       const response = await fetch(`${API_URL}/ask`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: question }),
+        body: JSON.stringify({ query: userMessage.text }),
       })
-      setAnswer(await response.json())
-    } catch {
-      setAnswer({ error: 'Failed to get answer. Check console.' })
+      const data = await response.json()
+      setMessages((prev) => [...prev, { role: 'assistant', text: data.answer, sources: data.sources }])
+    } catch (error) {
+      setMessages((prev) => [...prev, { role: 'assistant', text: 'Something went wrong. Please try again.' }])
     } finally {
       setAsking(false)
     }
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
-      <div className="w-full max-w-xl bg-white rounded-2xl shadow-md p-8">
-        <h1 className="text-2xl font-semibold text-gray-900 mb-6">Document Q&A</h1>
+    <div className="h-screen flex bg-gray-50">
+      {/* Sidebar */}
+      <div className="w-72 bg-white border-r border-gray-200 flex flex-col p-4">
+        <h1 className="text-lg font-semibold text-gray-900 mb-4">Document Q&A</h1>
 
-        <div className="mb-8">
-          <h2 className="text-sm font-medium text-gray-500 mb-2">1. Upload a PDF</h2>
-          <div className="flex items-center gap-3">
-            <input
-              type="file"
-              accept=".pdf"
-              onChange={handleFileChange}
-              className="text-sm text-gray-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-blue-50 file:text-blue-700 file:text-sm"
-            />
-            <button
-              onClick={handleUpload}
-              disabled={!file || uploading}
-              className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-blue-700 transition"
-            >
-              {uploading ? 'Uploading...' : 'Upload'}
-            </button>
+        <input type="file" accept=".pdf" ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={uploading}
+          className="w-full mb-4 px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:bg-gray-300 transition"
+        >
+          {uploading ? 'Uploading...' : '+ Upload PDF'}
+        </button>
+
+        <div className="flex-1 overflow-y-auto">
+          <h2 className="text-xs font-medium text-gray-400 uppercase mb-2">Documents ({documents.length})</h2>
+          <div className="space-y-1">
+            {documents.length === 0 && <p className="text-sm text-gray-400">No documents yet</p>}
+            {documents.map((doc) => (
+              <div key={doc} className="px-3 py-2 rounded-lg bg-blue-50 text-sm text-gray-700 truncate">
+                {doc}
+              </div>
+            ))}
           </div>
-          {uploadResult && (
-            <p className="mt-3 text-sm text-gray-600">
-              {uploadResult.error ?? `Uploaded "${uploadResult.filename}" — ${uploadResult.num_chunks} chunks stored.`}
-            </p>
+        </div>
+      </div>
+
+      {/* Main chat area */}
+      <div className="flex-1 flex flex-col">
+        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+          {messages.length === 0 && (
+            <p className="text-sm text-gray-400 text-center mt-12">Upload a document and ask a question to get started.</p>
           )}
+          {messages.map((msg, i) => (
+            <div key={i}>
+              {msg.role === 'user' ? (
+                <div className="max-w-lg ml-auto bg-blue-600 rounded-2xl rounded-tr-sm px-4 py-3 text-sm text-white shadow-sm">
+                  {msg.text}
+                </div>
+              ) : (
+                <div className="max-w-lg bg-white rounded-2xl rounded-tl-sm px-4 py-3 text-sm text-gray-700 shadow-sm">
+                  {msg.text}
+                  {msg.sources && msg.sources.length > 0 && (
+                    <details className="mt-2">
+                      <summary className="text-xs text-gray-500 cursor-pointer">Sources ({msg.sources.length})</summary>
+                      {msg.sources.map((s, j) => (
+                        <p key={j} className="text-xs text-gray-500 mt-1">{s.filename}, page {s.page}</p>
+                      ))}
+                    </details>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+          {asking && <div className="max-w-lg bg-white rounded-2xl rounded-tl-sm px-4 py-3 text-sm text-gray-400 shadow-sm">Thinking...</div>}
         </div>
 
-        <div>
-          <h2 className="text-sm font-medium text-gray-500 mb-2">2. Ask a question</h2>
-          <div className="flex items-center gap-3">
+        <div className="border-t border-gray-200 p-4 bg-white">
+          <div className="flex gap-3">
             <input
               type="text"
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
-              placeholder="What do you want to know?"
-              className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              onKeyDown={(e) => e.key === 'Enter' && handleAsk()}
+              placeholder="Ask a question..."
+              className="flex-1 border border-gray-200 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
             <button
               onClick={handleAsk}
               disabled={!question.trim() || asking}
-              className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-blue-700 transition"
+              className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:bg-gray-300 transition"
             >
-              {asking ? 'Thinking...' : 'Ask'}
+              Send
             </button>
           </div>
-
-          {answer && (
-            <div className="mt-4 bg-blue-50 rounded-xl p-4">
-              {answer.error ? (
-                <p className="text-sm text-red-600">{answer.error}</p>
-              ) : (
-                <>
-                  <p className="text-sm text-gray-800"><span className="font-medium">Answer:</span> {answer.answer}</p>
-                  
-                  <details className="mt-3">
-                    <summary className="text-xs text-gray-500 cursor-pointer font-medium">Sources ({answer.sources?.length || 0})</summary>
-                    {answer.sources?.map((source: any, i: number) => (
-                      <div key={i} className="text-xs text-gray-600 mt-2 border-l-2 border-blue-200 pl-2">
-                        <span className="font-semibold">{source.filename}, page {source.page}</span>
-                        <p className="mt-0.5 text-gray-500">{source.text}</p>
-                      </div>
-                    ))}
-                  </details>
-                </>
-              )}
-            </div>
-          )}
         </div>
       </div>
     </div>
