@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
 from google import genai
+from google.genai import errors as genai_errors
 from pydantic import BaseModel
 import chromadb
 
@@ -78,13 +79,28 @@ async def upload_pdf(file: UploadFile = File(...)):
         return {"error": "No readable text found in this PDF. It may be a scanned image."}
         
     embeddings = []
-    for chunk in all_chunks:
-        result = gemini_client.models.embed_content(
-            model="gemini-embedding-001",
-            contents=chunk
-        )
-        embeddings.append(result.embeddings[0].values)
-        
+    chunks_processed = 0
+    hit_limit = False
+    total_chunks = len(all_chunks)  # Baseline reference
+
+    try:
+        for chunk in all_chunks:
+            result = gemini_client.models.embed_content(
+                model="gemini-embedding-001",
+                contents=chunk
+            )
+            embeddings.append(result.embeddings[0].values)
+            chunks_processed += 1
+    except genai_errors.ClientError as e:
+        if e.code == 429:
+            hit_limit = True
+            if not embeddings:
+                return {"error": "API usage limit reached before any chunks could be embedded. Please try again later."}
+            all_chunks = all_chunks[:chunks_processed]
+            all_metadatas = all_metadatas[:chunks_processed]
+        else:
+            raise
+
     chunk_ids = [str(uuid.uuid4()) for _ in all_chunks]
     
     collection.add(
@@ -94,6 +110,15 @@ async def upload_pdf(file: UploadFile = File(...)):
         ids=chunk_ids
     )
     
+    if hit_limit:
+        return {
+            "filename": file.filename,
+            "num_pages": len(reader.pages),
+            "num_chunks": len(all_chunks),
+            "total_stored_in_db": collection.count(),
+            "warning": f"Uploaded and processed {chunks_processed} of {total_chunks} chunks before hitting the daily limit."
+        }
+
     return {
         "filename": file.filename,
         "num_pages": len(reader.pages),
@@ -103,11 +128,20 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 @app.post("/ask")
 async def ask_question(question: Question):
-    # Step 1: Embed user query
-    query_embedding = gemini_client.models.embed_content(
-        model="gemini-embedding-001",
-        contents=question.query
-    ).embeddings[0].values
+    # Step 1: Embed user query with rate limit handling
+    try:
+        query_embedding = gemini_client.models.embed_content(
+            model="gemini-embedding-001",
+            contents=question.query
+        ).embeddings[0].values
+    except genai_errors.ClientError as e:
+        if e.code == 429:
+            return {
+                "question": question.query,
+                "answer": "I've hit today's API usage limit. Please try again later or tomorrow.",
+                "sources": []
+            }
+        raise
 
     # Step 2: Query ChromaDB for top results and metadatas
     results = collection.query(
@@ -115,7 +149,6 @@ async def ask_question(question: Question):
         n_results=3
     )
     
-    # Safely extract chunks and metadatas if available
     retrieved_chunks = results["documents"][0] if results["documents"] and len(results["documents"]) > 0 else []
     retrieved_metadatas = results["metadatas"][0] if results["metadatas"] and len(results["metadatas"]) > 0 else []
 
@@ -127,7 +160,7 @@ async def ask_question(question: Question):
             "sources": []
         }
 
-    # Step 4: Build context and generate answer
+    # Step 4: Build context and generate answer with rate limit handling
     context = "\n\n".join(retrieved_chunks)
     prompt = f"""Answer the question using only the context below. If the answer isn't in the context, say you don't know.
 
@@ -138,10 +171,19 @@ Question: {question.query}
 
 Answer:"""
 
-    response = gemini_client.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=prompt
-    )
+    try:
+        response = gemini_client.models.generate_content(
+            model="gemini-3.5-flash-lite",
+            contents=prompt
+        )
+    except genai_errors.ClientError as e:
+        if e.code == 429:
+            return {
+                "question": question.query,
+                "answer": "I've hit today's API usage limit. Please try again later or tomorrow.",
+                "sources": []
+            }
+        raise
 
     # Step 5: Map chunks and metadata into a clean source list for citations
     sources = [
