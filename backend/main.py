@@ -1,7 +1,6 @@
 import uuid
 import os
 import shutil
-import httpx
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -43,7 +42,7 @@ def get_embedding(text: str, mode: str):
         try:
             result = ollama.embed(model="nomic-embed-text", input=text)
             return result["embeddings"][0]
-        except httpx.ConnectError:
+        except ConnectionError:
             raise RuntimeError("Local mode isn't available on this deployment — Ollama isn't running here. Clone the repo and run it locally to use Local mode.")
     else:
         result = gemini_client.models.embed_content(model="gemini-embedding-001", contents=text)
@@ -54,7 +53,7 @@ def generate_answer(prompt: str, mode: str):
         try:
             response = ollama.chat(model="gemma3:4b", messages=[{"role": "user", "content": prompt}])
             return response["message"]["content"]
-        except httpx.ConnectError:
+        except ConnectionError:
             raise RuntimeError("Local mode isn't available on this deployment — Ollama isn't running here. Clone the repo and run it locally to use Local mode.")
     else:
         response = gemini_client.models.generate_content(model="gemini-3.5-flash-lite", contents=prompt)
