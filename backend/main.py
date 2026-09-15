@@ -1,7 +1,7 @@
 import uuid
 import os
 import shutil
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -10,6 +10,7 @@ from google import genai
 from google.genai import errors as genai_errors
 from pydantic import BaseModel
 import chromadb
+import ollama
 
 load_dotenv()
 app = FastAPI()
@@ -26,15 +27,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Set up the Gemini client and a persistent ChromaDB store
+# Set up the Gemini client and a persistent ChromaDB store with dual collections
 gemini_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-chroma_client = chromadb.PersistentClient(path="./chroma_db")
-collection = chroma_client.get_or_create_collection(name="documents")
+chroma_client = chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
-# Pydantic model for the question endpoint with history support
+collection_cloud = chroma_client.get_or_create_collection(name="documents_cloud")
+collection_local = chroma_client.get_or_create_collection(name="documents_local")
+
+def get_collection(mode: str):
+    return collection_local if mode == "local" else collection_cloud
+
+def get_embedding(text: str, mode: str):
+    if mode == "local":
+        result = ollama.embed(model="nomic-embed-text", input=text)
+        return result["embeddings"][0]
+    else:
+        result = gemini_client.models.embed_content(model="gemini-embedding-001", contents=text)
+        return result.embeddings[0].values
+
+def generate_answer(prompt: str, mode: str):
+    if mode == "local":
+        response = ollama.chat(model="gemma3:4b", messages=[{"role": "user", "content": prompt}])
+        return response["message"]["content"]
+    else:
+        response = gemini_client.models.generate_content(model="gemini-3.5-flash-lite", contents=prompt)
+        return response.text
+
+# Pydantic model for the question endpoint with history support and mode selection
 class Question(BaseModel):
     query: str
     history: list[dict] = []
+    mode: str = "cloud"
 
 def needs_reformulation(query: str) -> bool:
     trigger_words = ["it", "that", "this", "those", "these", "second", "first", "also", "previous", "again", "more"]
@@ -46,8 +69,9 @@ def health_check():
     return {"status": "running"}
 
 @app.get("/documents")
-def list_documents():
-    all_data = collection.get()
+def list_documents(mode: str = "cloud"):
+    target_collection = get_collection(mode)
+    all_data = target_collection.get()
     filenames = set()
     if all_data and "metadatas" in all_data and all_data["metadatas"]:
         for metadata in all_data["metadatas"]:
@@ -56,7 +80,7 @@ def list_documents():
     return {"documents": list(filenames)}
 
 @app.post("/upload")
-async def upload_pdf(file: UploadFile = File(...)):
+async def upload_pdf(file: UploadFile = File(...), mode: str = Form("cloud")):
     if not file.filename.lower().endswith(".pdf"):
         return {"error": "Only PDF files are supported."}
     
@@ -87,15 +111,11 @@ async def upload_pdf(file: UploadFile = File(...)):
     embeddings = []
     chunks_processed = 0
     hit_limit = False
-    total_chunks = len(all_chunks)  # Baseline reference
+    total_chunks = len(all_chunks)
 
     try:
         for chunk in all_chunks:
-            result = gemini_client.models.embed_content(
-                model="gemini-embedding-001",
-                contents=chunk
-            )
-            embeddings.append(result.embeddings[0].values)
+            embeddings.append(get_embedding(chunk, mode))
             chunks_processed += 1
     except genai_errors.ClientError as e:
         if e.code == 429:
@@ -108,32 +128,31 @@ async def upload_pdf(file: UploadFile = File(...)):
             raise
 
     chunk_ids = [str(uuid.uuid4()) for _ in all_chunks]
+    target_collection = get_collection(mode)
     
-    collection.add(
+    target_collection.add(
         documents=all_chunks,
         embeddings=embeddings,
         metadatas=all_metadatas,
         ids=chunk_ids
     )
     
-    if hit_limit:
-        return {
-            "filename": file.filename,
-            "num_pages": len(reader.pages),
-            "num_chunks": len(all_chunks),
-            "total_stored_in_db": collection.count(),
-            "warning": f"Uploaded and processed {chunks_processed} of {total_chunks} chunks before hitting the daily limit."
-        }
-
-    return {
+    result = {
         "filename": file.filename,
         "num_pages": len(reader.pages),
         "num_chunks": len(all_chunks),
-        "total_stored_in_db": collection.count()
+        "total_stored_in_db": target_collection.count(),
+        "mode": mode
     }
+
+    if hit_limit:
+        result["warning"] = f"Uploaded and processed {chunks_processed} of {total_chunks} chunks before hitting the daily limit."
+
+    return result
 
 @app.post("/ask")
 async def ask_question(question: Question):
+    target_collection = get_collection(question.mode)
     search_query = question.query
 
     # Step 1: Reformulate follow-up questions using history context if needed
@@ -147,11 +166,7 @@ Rewrite this follow-up question as a standalone question, using context from the
 Follow-up question: {question.query}"""
 
         try:
-            rewrite_response = gemini_client.models.generate_content(
-                model="gemini-3.5-flash-lite",
-                contents=rewrite_prompt
-            )
-            search_query = rewrite_response.text.strip()
+            search_query = generate_answer(rewrite_prompt, question.mode).strip()
         except genai_errors.ClientError as e:
             if e.code == 429:
                 search_query = question.query  # Fall back to original query if limited
@@ -160,10 +175,7 @@ Follow-up question: {question.query}"""
 
     # Step 2: Embed user query with rate limit handling
     try:
-        query_embedding = gemini_client.models.embed_content(
-            model="gemini-embedding-001",
-            contents=search_query
-        ).embeddings[0].values
+        query_embedding = get_embedding(search_query, question.mode)
     except genai_errors.ClientError as e:
         if e.code == 429:
             return {
@@ -173,8 +185,8 @@ Follow-up question: {question.query}"""
             }
         raise
 
-    # Step 3: Query ChromaDB for top results and metadatas
-    results = collection.query(
+    # Step 3: Query target ChromaDB collection for top results and metadatas
+    results = target_collection.query(
         query_embeddings=[query_embedding],
         n_results=3
     )
@@ -186,7 +198,7 @@ Follow-up question: {question.query}"""
     if not retrieved_chunks:
         return {
             "question": question.query, 
-            "answer": "No documents have been uploaded yet. Please upload a PDF first.", 
+            "answer": "No documents have been uploaded yet in this mode. Please upload a PDF first.", 
             "sources": []
         }
 
@@ -206,10 +218,7 @@ Question: {question.query}
 Answer:"""
 
     try:
-        response = gemini_client.models.generate_content(
-            model="gemini-3.5-flash-lite",
-            contents=prompt
-        )
+        answer_text = generate_answer(prompt, question.mode)
     except genai_errors.ClientError as e:
         if e.code == 429:
             return {
@@ -231,6 +240,6 @@ Answer:"""
 
     return {
         "question": question.query,
-        "answer": response.text,
+        "answer": answer_text,
         "sources": sources
     }

@@ -14,11 +14,12 @@ function App() {
   const [question, setQuestion] = useState('')
   const [asking, setAsking] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [mode, setMode] = useState<'cloud' | 'local'>('cloud')
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const fetchDocuments = async () => {
+  const fetchDocuments = async (currentMode: string) => {
     try {
-      const response = await fetch(`${API_URL}/documents`)
+      const response = await fetch(`${API_URL}/documents?mode=${currentMode}`)
       const data = await response.json()
       setDocuments(data.documents)
     } catch (error) {
@@ -27,8 +28,8 @@ function App() {
   }
 
   useEffect(() => {
-    fetchDocuments()
-  }, [])
+    fetchDocuments(mode)
+  }, [mode])
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -37,6 +38,7 @@ function App() {
     setUploading(true)
     const formData = new FormData()
     formData.append('file', file)
+    formData.append('mode', mode)
 
     try {
       const response = await fetch(`${API_URL}/upload`, { method: 'POST', body: formData })
@@ -44,7 +46,7 @@ function App() {
       if (data.error) {
         alert(data.error)
       } else {
-        await fetchDocuments()
+        await fetchDocuments(mode)
       }
     } catch (error) {
       console.error('Upload failed:', error)
@@ -59,7 +61,6 @@ function App() {
     if (!question.trim()) return
 
     const userMessage: Message = { role: 'user', text: question }
-    // Pass current messages as history before appending the new user message
     const currentHistory = messages.map(m => ({ role: m.role, text: m.text }))
 
     setMessages((prev) => [...prev, userMessage])
@@ -72,7 +73,8 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           query: userMessage.text,
-          history: currentHistory
+          history: currentHistory,
+          mode: mode,
         }),
       })
       const data = await response.json()
@@ -89,6 +91,22 @@ function App() {
       {/* Sidebar */}
       <div className="w-72 bg-white border-r border-gray-200 flex flex-col p-4">
         <h1 className="text-lg font-semibold text-gray-900 mb-4">Document Q&A</h1>
+
+        {/* Mode Toggle Switch */}
+        <div className="flex items-center gap-2 mb-4 p-1 bg-gray-100 rounded-lg">
+          <button
+            onClick={() => setMode('cloud')}
+            className={`flex-1 py-1.5 rounded-md text-xs font-medium transition ${mode === 'cloud' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'}`}
+          >
+            ☁️ Cloud (Gemini)
+          </button>
+          <button
+            onClick={() => setMode('local')}
+            className={`flex-1 py-1.5 rounded-md text-xs font-medium transition ${mode === 'local' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'}`}
+          >
+            🔒 Local (Private)
+          </button>
+        </div>
 
         <input type="file" accept=".pdf" ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
         <button
