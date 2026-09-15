@@ -59,6 +59,9 @@ function App() {
     if (!question.trim()) return
 
     const userMessage: Message = { role: 'user', text: question }
+    // Pass current messages as history before appending the new user message
+    const currentHistory = messages.map(m => ({ role: m.role, text: m.text }))
+
     setMessages((prev) => [...prev, userMessage])
     setQuestion('')
     setAsking(true)
@@ -67,7 +70,10 @@ function App() {
       const response = await fetch(`${API_URL}/ask`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: userMessage.text }),
+        body: JSON.stringify({
+          query: userMessage.text,
+          history: currentHistory
+        }),
       })
       const data = await response.json()
       setMessages((prev) => [...prev, { role: 'assistant', text: data.answer, sources: data.sources }])

@@ -31,9 +31,15 @@ gemini_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 chroma_client = chromadb.PersistentClient(path="./chroma_db")
 collection = chroma_client.get_or_create_collection(name="documents")
 
-# Pydantic model for the question endpoint
+# Pydantic model for the question endpoint with history support
 class Question(BaseModel):
     query: str
+    history: list[dict] = []
+
+def needs_reformulation(query: str) -> bool:
+    trigger_words = ["it", "that", "this", "those", "these", "second", "first", "also", "previous", "again", "more"]
+    words = query.lower().split()
+    return len(words) <= 6 or any(word in trigger_words for word in words)
 
 @app.get("/")
 def health_check():
@@ -128,11 +134,35 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 @app.post("/ask")
 async def ask_question(question: Question):
-    # Step 1: Embed user query with rate limit handling
+    search_query = question.query
+
+    # Step 1: Reformulate follow-up questions using history context if needed
+    if question.history and needs_reformulation(question.query):
+        history_text = "\n".join([f"{m['role']}: {m['text']}" for m in question.history[-4:]])
+        rewrite_prompt = f"""Given this conversation history:
+{history_text}
+
+Rewrite this follow-up question as a standalone question, using context from the history. Only output the rewritten question, nothing else.
+
+Follow-up question: {question.query}"""
+
+        try:
+            rewrite_response = gemini_client.models.generate_content(
+                model="gemini-3.5-flash-lite",
+                contents=rewrite_prompt
+            )
+            search_query = rewrite_response.text.strip()
+        except genai_errors.ClientError as e:
+            if e.code == 429:
+                search_query = question.query  # Fall back to original query if limited
+            else:
+                raise
+
+    # Step 2: Embed user query with rate limit handling
     try:
         query_embedding = gemini_client.models.embed_content(
             model="gemini-embedding-001",
-            contents=question.query
+            contents=search_query
         ).embeddings[0].values
     except genai_errors.ClientError as e:
         if e.code == 429:
@@ -143,7 +173,7 @@ async def ask_question(question: Question):
             }
         raise
 
-    # Step 2: Query ChromaDB for top results and metadatas
+    # Step 3: Query ChromaDB for top results and metadatas
     results = collection.query(
         query_embeddings=[query_embedding],
         n_results=3
@@ -152,7 +182,7 @@ async def ask_question(question: Question):
     retrieved_chunks = results["documents"][0] if results["documents"] and len(results["documents"]) > 0 else []
     retrieved_metadatas = results["metadatas"][0] if results["metadatas"] and len(results["metadatas"]) > 0 else []
 
-    # Step 3: Handle empty database or no matches
+    # Step 4: Handle empty database or no matches
     if not retrieved_chunks:
         return {
             "question": question.query, 
@@ -160,9 +190,13 @@ async def ask_question(question: Question):
             "sources": []
         }
 
-    # Step 4: Build context and generate answer with rate limit handling
+    # Step 5: Build conversation history context and final prompt
+    history_context = ""
+    if question.history:
+        history_context = "Previous conversation:\n" + "\n".join([f"{m['role']}: {m['text']}" for m in question.history[-4:]]) + "\n\n"
+
     context = "\n\n".join(retrieved_chunks)
-    prompt = f"""Answer the question using only the context below. If the answer isn't in the context, say you don't know.
+    prompt = f"""{history_context}Answer the question using only the context below. If the answer isn't in the context, say you don't know.
 
 Context:
 {context}
@@ -185,12 +219,12 @@ Answer:"""
             }
         raise
 
-    # Step 5: Map chunks and metadata into a clean source list for citations
+    # Step 6: Map chunks and metadata into a clean source list for citations safely
     sources = [
         {
             "text": chunk, 
-            "filename": meta.get("filename", "Unknown"), 
-            "page": meta.get("page", 1)
+            "filename": (meta or {}).get("filename", "Unknown"), 
+            "page": (meta or {}).get("page", 1)
         }
         for chunk, meta in zip(retrieved_chunks, retrieved_metadatas)
     ]
