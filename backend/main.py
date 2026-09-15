@@ -1,6 +1,7 @@
 import uuid
 import os
 import shutil
+import httpx
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -29,7 +30,7 @@ app.add_middleware(
 
 # Set up the Gemini client and a persistent ChromaDB store with dual collections
 gemini_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-chroma_client = chroma_client = chromadb.PersistentClient(path="./chroma_db")
+chroma_client = chromadb.PersistentClient(path="./chroma_db")
 
 collection_cloud = chroma_client.get_or_create_collection(name="documents_cloud")
 collection_local = chroma_client.get_or_create_collection(name="documents_local")
@@ -39,16 +40,22 @@ def get_collection(mode: str):
 
 def get_embedding(text: str, mode: str):
     if mode == "local":
-        result = ollama.embed(model="nomic-embed-text", input=text)
-        return result["embeddings"][0]
+        try:
+            result = ollama.embed(model="nomic-embed-text", input=text)
+            return result["embeddings"][0]
+        except httpx.ConnectError:
+            raise RuntimeError("Local mode isn't available on this deployment — Ollama isn't running here. Clone the repo and run it locally to use Local mode.")
     else:
         result = gemini_client.models.embed_content(model="gemini-embedding-001", contents=text)
         return result.embeddings[0].values
 
 def generate_answer(prompt: str, mode: str):
     if mode == "local":
-        response = ollama.chat(model="gemma3:4b", messages=[{"role": "user", "content": prompt}])
-        return response["message"]["content"]
+        try:
+            response = ollama.chat(model="gemma3:4b", messages=[{"role": "user", "content": prompt}])
+            return response["message"]["content"]
+        except httpx.ConnectError:
+            raise RuntimeError("Local mode isn't available on this deployment — Ollama isn't running here. Clone the repo and run it locally to use Local mode.")
     else:
         response = gemini_client.models.generate_content(model="gemini-3.5-flash-lite", contents=prompt)
         return response.text
@@ -126,6 +133,8 @@ async def upload_pdf(file: UploadFile = File(...), mode: str = Form("cloud")):
             all_metadatas = all_metadatas[:chunks_processed]
         else:
             raise
+    except RuntimeError as e:
+        return {"error": str(e)}
 
     chunk_ids = [str(uuid.uuid4()) for _ in all_chunks]
     target_collection = get_collection(mode)
@@ -172,8 +181,10 @@ Follow-up question: {question.query}"""
                 search_query = question.query  # Fall back to original query if limited
             else:
                 raise
+        except RuntimeError as e:
+            return {"question": question.query, "answer": str(e), "sources": []}
 
-    # Step 2: Embed user query with rate limit handling
+    # Step 2: Embed user query with rate limit and runtime handling
     try:
         query_embedding = get_embedding(search_query, question.mode)
     except genai_errors.ClientError as e:
@@ -184,6 +195,8 @@ Follow-up question: {question.query}"""
                 "sources": []
             }
         raise
+    except RuntimeError as e:
+        return {"question": question.query, "answer": str(e), "sources": []}
 
     # Step 3: Query target ChromaDB collection for top results and metadatas
     results = target_collection.query(
@@ -227,6 +240,8 @@ Answer:"""
                 "sources": []
             }
         raise
+    except RuntimeError as e:
+        return {"question": question.query, "answer": str(e), "sources": []}
 
     # Step 6: Map chunks and metadata into a clean source list for citations safely
     sources = [

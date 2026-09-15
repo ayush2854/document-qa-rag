@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 
 const API_URL = import.meta.env.VITE_API_URL
+const isLocalEnvironment = import.meta.env.DEV
 
 interface Message {
   role: 'user' | 'assistant'
@@ -93,7 +94,7 @@ function App() {
         <h1 className="text-lg font-semibold text-gray-900 mb-4">Document Q&A</h1>
 
         {/* Mode Toggle Switch */}
-        <div className="flex items-center gap-2 mb-4 p-1 bg-gray-100 rounded-lg">
+        <div className="flex items-center gap-2 mb-1 p-1 bg-gray-100 rounded-lg">
           <button
             onClick={() => setMode('cloud')}
             className={`flex-1 py-1.5 rounded-md text-xs font-medium transition ${mode === 'cloud' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'}`}
@@ -101,12 +102,17 @@ function App() {
             ☁️ Cloud (Gemini)
           </button>
           <button
-            onClick={() => setMode('local')}
-            className={`flex-1 py-1.5 rounded-md text-xs font-medium transition ${mode === 'local' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'}`}
+            onClick={() => isLocalEnvironment && setMode('local')}
+            disabled={!isLocalEnvironment}
+            title={!isLocalEnvironment ? 'Requires running this project locally with Ollama installed' : ''}
+            className={`flex-1 py-1.5 rounded-md text-xs font-medium transition ${mode === 'local' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'} ${!isLocalEnvironment ? 'opacity-40 cursor-not-allowed' : ''}`}
           >
             🔒 Local (Private)
           </button>
         </div>
+        {!isLocalEnvironment && (
+          <p className="text-xs text-gray-400 mb-3">Local mode needs Ollama running on your machine — clone the repo to try it.</p>
+        )}
 
         <input type="file" accept=".pdf" ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
         <button
