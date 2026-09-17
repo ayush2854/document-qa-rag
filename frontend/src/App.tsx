@@ -9,6 +9,12 @@ interface Message {
   sources?: { filename: string; page: number; text: string }[]
 }
 
+interface Toast {
+  id: number
+  message: string
+  type: 'success' | 'error'
+}
+
 function App() {
   const [documents, setDocuments] = useState<string[]>([])
   const [messages, setMessages] = useState<Message[]>([])
@@ -17,6 +23,17 @@ function App() {
   const [uploading, setUploading] = useState(false)
   const [mode, setMode] = useState<'cloud' | 'local'>('cloud')
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const [toasts, setToasts] = useState<Toast[]>([])
+  const [isDragging, setIsDragging] = useState(false)
+
+  const showToast = (message: string, type: 'success' | 'error') => {
+    const id = Date.now()
+    setToasts((prev) => [...prev, { id, message, type }])
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id))
+    }, 4000)
+  }
 
   const fetchDocuments = async (currentMode: string) => {
     try {
@@ -32,29 +49,44 @@ function App() {
     fetchDocuments(mode)
   }, [mode])
 
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-
+  const uploadFile = async (file: File) => {
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      showToast('Only PDF files are supported.', 'error')
+      return
+    }
     setUploading(true)
     const formData = new FormData()
     formData.append('file', file)
     formData.append('mode', mode)
-
     try {
       const response = await fetch(`${API_URL}/upload`, { method: 'POST', body: formData })
       const data = await response.json()
       if (data.error) {
-        alert(data.error)
+        showToast(data.error, 'error')
       } else {
+        showToast(`Uploaded "${data.filename}" — ${data.num_chunks} chunks stored.`, 'success')
+        if (data.warning) showToast(data.warning, 'error')
         await fetchDocuments(mode)
       }
     } catch (error) {
-      console.error('Upload failed:', error)
-      alert('Upload failed. Check console.')
+      showToast('Upload failed. Check console.', 'error')
     } finally {
       setUploading(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) await uploadFile(file)
+  }
+
+  const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    setIsDragging(false)
+    const droppedFile = e.dataTransfer.files?.[0]
+    if (droppedFile) {
+      await uploadFile(droppedFile)
     }
   }
 
@@ -114,14 +146,20 @@ function App() {
           <p className="text-xs text-gray-400 mb-3">Local mode needs Ollama running on your machine — clone the repo to try it.</p>
         )}
 
-        <input type="file" accept=".pdf" ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
-        <button
+        <div
+          onDragOver={(e) => { e.preventDefault(); setIsDragging(true) }}
+          onDragLeave={() => setIsDragging(false)}
+          onDrop={handleDrop}
           onClick={() => fileInputRef.current?.click()}
-          disabled={uploading}
-          className="w-full mb-4 px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:bg-gray-300 transition"
+          className={`w-full mb-4 border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition ${
+            isDragging ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-gray-400'
+          }`}
         >
-          {uploading ? 'Uploading...' : '+ Upload PDF'}
-        </button>
+          <input type="file" accept=".pdf" ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
+          <p className="text-sm text-gray-500">
+            {uploading ? 'Uploading...' : isDragging ? 'Drop your PDF here' : 'Drag & drop a PDF, or click to browse'}
+          </p>
+        </div>
 
         <div className="flex-1 overflow-y-auto">
           <h2 className="text-xs font-medium text-gray-400 uppercase mb-2">Documents ({documents.length})</h2>
@@ -185,6 +223,18 @@ function App() {
             </button>
           </div>
         </div>
+      </div>
+
+      {/* Toast Notification Container */}
+      <div className="fixed bottom-4 right-4 space-y-2 z-50">
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className={`px-4 py-3 rounded-lg shadow-lg text-sm text-white ${toast.type === 'success' ? 'bg-green-600' : 'bg-red-600'}`}
+          >
+            {toast.message}
+          </div>
+        ))}
       </div>
     </div>
   )
