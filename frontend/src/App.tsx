@@ -27,6 +27,7 @@ function App() {
   const [toasts, setToasts] = useState<Toast[]>([])
   const [isDragging, setIsDragging] = useState(false)
   const [activeMenuDoc, setActiveMenuDoc] = useState<string | null>(null)
+  const [documentToDelete, setDocumentToDelete] = useState<string | null>(null)
 
   const showToast = (message: string, type: 'success' | 'error') => {
     const id = Date.now()
@@ -84,10 +85,10 @@ function App() {
     }
   }
 
-  const handleDeleteDocument = async (filename: string, e: React.MouseEvent) => {
-    e.stopPropagation()
-    setActiveMenuDoc(null)
-    if (!window.confirm(`Are you sure you want to delete "${filename}"?`)) return
+  const confirmDelete = async () => {
+    if (!documentToDelete) return
+    const filename = documentToDelete
+    setDocumentToDelete(null)
 
     try {
       const response = await fetch(`${API_URL}/documents/${encodeURIComponent(filename)}?mode=${mode}`, {
@@ -227,7 +228,11 @@ function App() {
                   {activeMenuDoc === doc && (
                     <div className="absolute right-0 mt-1 w-36 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-20 text-xs">
                       <button
-                        onClick={(e) => handleDeleteDocument(doc, e)}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setActiveMenuDoc(null)
+                          setDocumentToDelete(doc)
+                        }}
                         className="w-full text-left px-3 py-1.5 text-red-600 hover:bg-red-50 flex items-center gap-2 font-medium"
                       >
                         🗑️ Delete
@@ -292,12 +297,40 @@ function App() {
         </div>
       </div>
 
-      {/* Toast Notification Container */}
-      <div className="fixed bottom-4 right-4 space-y-2 z-50">
+      {/* Custom Delete Confirmation Modal */}
+      {documentToDelete && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-sm w-full p-6 space-y-4 animate-in fade-in zoom-in duration-150">
+            <h3 className="text-base font-semibold text-gray-900">Delete document?</h3>
+            <p className="text-sm text-gray-500">
+              Are you sure you want to delete <span className="font-medium text-gray-700">"{documentToDelete}"</span>? This will remove all its data and chat context.
+            </p>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                onClick={() => setDocumentToDelete(null)}
+                className="px-4 py-2 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-100 transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDelete}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-red-600 text-white hover:bg-red-700 transition shadow-sm"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast Notification Container (Positioned at Top-Center) */}
+      <div className="fixed top-5 left-1/2 -translate-x-1/2 space-y-2 z-50 pointer-events-none">
         {toasts.map((toast) => (
           <div
             key={toast.id}
-            className={`px-4 py-3 rounded-lg shadow-lg text-sm text-white ${toast.type === 'success' ? 'bg-green-600' : 'bg-red-600'}`}
+            className={`pointer-events-auto px-4 py-3 rounded-lg shadow-xl text-sm font-medium text-white transition-all animate-in fade-in slide-in-from-top-2 duration-200 ${
+              toast.type === 'success' ? 'bg-gray-900 border border-gray-800' : 'bg-red-600'
+            }`}
           >
             {toast.message}
           </div>
