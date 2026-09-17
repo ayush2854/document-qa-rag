@@ -300,7 +300,7 @@ function App() {
       {/* Custom Delete Confirmation Modal */}
       {documentToDelete && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl shadow-xl max-w-sm w-full p-6 space-y-4 animate-in fade-in zoom-in duration-150">
+          <div className="bg-white rounded-xl shadow-xl max-w-sm w-full p-6 space-y-4 animate-modal-in">
             <h3 className="text-base font-semibold text-gray-900">Delete document?</h3>
             <p className="text-sm text-gray-500">
               Are you sure you want to delete <span className="font-medium text-gray-700">"{documentToDelete}"</span>? This will remove all its data and chat context.
@@ -323,12 +323,12 @@ function App() {
         </div>
       )}
 
-      {/* Toast Notification Container (Positioned at Top-Center) */}
+      {/* Toast Notification Container */}
       <div className="fixed top-5 left-1/2 -translate-x-1/2 space-y-2 z-50 pointer-events-none">
         {toasts.map((toast) => (
           <div
             key={toast.id}
-            className={`pointer-events-auto px-4 py-3 rounded-lg shadow-xl text-sm font-medium text-white transition-all animate-in fade-in slide-in-from-top-2 duration-200 ${
+            className={`pointer-events-auto px-4 py-3 rounded-lg shadow-xl text-sm font-medium text-white animate-toast-in ${
               toast.type === 'success' ? 'bg-gray-900 border border-gray-800' : 'bg-red-600'
             }`}
           >
