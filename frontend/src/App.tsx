@@ -157,7 +157,16 @@ function App() {
         >
           <input type="file" accept=".pdf" ref={fileInputRef} onChange={handleFileSelect} className="hidden" />
           <p className="text-sm text-gray-500">
-            {uploading ? 'Uploading...' : isDragging ? 'Drop your PDF here' : 'Drag & drop a PDF, or click to browse'}
+            {uploading ? (
+              <span className="flex items-center justify-center gap-2">
+                <span className="animate-spin h-3 w-3 border-2 border-blue-500 border-t-transparent rounded-full"></span>
+                Processing document...
+              </span>
+            ) : isDragging ? (
+              'Drop your PDF here'
+            ) : (
+              'Drag & drop a PDF, or click to browse'
+            )}
           </p>
         </div>
 
