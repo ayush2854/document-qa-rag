@@ -26,6 +26,7 @@ function App() {
 
   const [toasts, setToasts] = useState<Toast[]>([])
   const [isDragging, setIsDragging] = useState(false)
+  const [activeMenuDoc, setActiveMenuDoc] = useState<string | null>(null)
 
   const showToast = (message: string, type: 'success' | 'error') => {
     const id = Date.now()
@@ -48,6 +49,13 @@ function App() {
   useEffect(() => {
     fetchDocuments(mode)
   }, [mode])
+
+  // Close dropdown menu when clicking anywhere else
+  useEffect(() => {
+    const handleClickOutside = () => setActiveMenuDoc(null)
+    window.addEventListener('click', handleClickOutside)
+    return () => window.removeEventListener('click', handleClickOutside)
+  }, [])
 
   const uploadFile = async (file: File) => {
     if (!file.name.toLowerCase().endsWith('.pdf')) {
@@ -73,6 +81,28 @@ function App() {
     } finally {
       setUploading(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  const handleDeleteDocument = async (filename: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setActiveMenuDoc(null)
+    if (!window.confirm(`Are you sure you want to delete "${filename}"?`)) return
+
+    try {
+      const response = await fetch(`${API_URL}/documents/${encodeURIComponent(filename)}?mode=${mode}`, {
+        method: 'DELETE',
+      })
+      const data = await response.json()
+      if (data.error) {
+        showToast(data.error, 'error')
+      } else {
+        showToast(`Deleted "${filename}" successfully.`, 'success')
+        await fetchDocuments(mode)
+      }
+    } catch (error) {
+      console.error('Failed to delete document:', error)
+      showToast('Failed to delete document. Check console.', 'error')
     }
   }
 
@@ -175,8 +205,36 @@ function App() {
           <div className="space-y-1">
             {documents.length === 0 && <p className="text-sm text-gray-400">No documents yet</p>}
             {documents.map((doc) => (
-              <div key={doc} className="px-3 py-2 rounded-lg bg-blue-50 text-sm text-gray-700 truncate">
-                {doc}
+              <div 
+                key={doc} 
+                className="px-3 py-2 rounded-lg bg-blue-50 text-sm text-gray-700 flex items-center justify-between group relative transition"
+              >
+                <span className="truncate pr-2" title={doc}>{doc}</span>
+                
+                <div className="relative">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setActiveMenuDoc(activeMenuDoc === doc ? null : doc)
+                    }}
+                    className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-gray-700 transition p-1 rounded hover:bg-blue-100"
+                    title="Document options"
+                  >
+                    ⋮
+                  </button>
+
+                  {/* Dropdown Menu */}
+                  {activeMenuDoc === doc && (
+                    <div className="absolute right-0 mt-1 w-36 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-20 text-xs">
+                      <button
+                        onClick={(e) => handleDeleteDocument(doc, e)}
+                        className="w-full text-left px-3 py-1.5 text-red-600 hover:bg-red-50 flex items-center gap-2 font-medium"
+                      >
+                        🗑️ Delete
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             ))}
           </div>

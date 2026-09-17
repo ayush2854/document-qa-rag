@@ -85,6 +85,19 @@ def list_documents(mode: str = "cloud"):
                 filenames.add(metadata["filename"])
     return {"documents": list(filenames)}
 
+@app.delete("/documents/{filename}")
+async def delete_document(filename: str, mode: str = "cloud"):
+    target_collection = get_collection(mode)
+    try:
+        existing = target_collection.get(where={"filename": filename})
+        if not existing["ids"]:
+            return {"error": f'No document found matching "{filename}".'}
+            
+        target_collection.delete(where={"filename": filename})
+        return {"success": True, "message": f"Deleted {filename} successfully."}
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...), mode: str = Form("cloud")):
     if not file.filename.lower().endswith(".pdf"):
