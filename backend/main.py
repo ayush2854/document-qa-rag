@@ -1,7 +1,7 @@
 import uuid
 import os
 import shutil
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -9,8 +9,9 @@ from pypdf import PdfReader
 from google import genai
 from google.genai import errors as genai_errors
 from pydantic import BaseModel
-import chromadb
 import ollama
+from sqlalchemy import create_engine, text
+from auth import hash_password, verify_password, create_access_token, get_current_user
 
 load_dotenv()
 app = FastAPI()
@@ -27,25 +28,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Set up the Gemini client and a persistent ChromaDB store with dual collections
+# Set up the Gemini client and Database engine
 gemini_client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-chroma_client = chromadb.PersistentClient(path="./chroma_db")
+db_engine = create_engine(os.environ["DATABASE_URL"])
 
-collection_cloud = chroma_client.get_or_create_collection(name="documents_cloud")
-collection_local = chroma_client.get_or_create_collection(name="documents_local")
-
-def get_collection(mode: str):
-    return collection_local if mode == "local" else collection_cloud
-
-def get_embedding(text: str, mode: str):
+def get_embedding(text_content: str, mode: str):
     if mode == "local":
         try:
-            result = ollama.embed(model="nomic-embed-text", input=text)
+            result = ollama.embed(model="nomic-embed-text", input=text_content)
             return result["embeddings"][0]
         except ConnectionError:
             raise RuntimeError("Local mode isn't available on this deployment — Ollama isn't running here. Clone the repo and run it locally to use Local mode.")
     else:
-        result = gemini_client.models.embed_content(model="gemini-embedding-001", contents=text)
+        result = gemini_client.models.embed_content(model="gemini-embedding-001", contents=text_content)
         return result.embeddings[0].values
 
 def generate_answer(prompt: str, mode: str):
@@ -59,11 +54,76 @@ def generate_answer(prompt: str, mode: str):
         response = gemini_client.models.generate_content(model="gemini-3.5-flash-lite", contents=prompt)
         return response.text
 
-# Pydantic model for the question endpoint with history support and mode selection
+# Storage & Retrieval Helpers with pgvector
+def get_table_name(mode: str) -> str:
+    return "chunks_local" if mode == "local" else "chunks_cloud"
+
+def store_chunks(user_id: int, filename: str, chunks: list, metadatas: list, embeddings: list, mode: str):
+    table = get_table_name(mode)
+    with db_engine.connect() as conn:
+        for chunk, meta, embedding in zip(chunks, metadatas, embeddings):
+            conn.execute(
+                text(f"""
+                    INSERT INTO {table} (user_id, filename, page, text, embedding)
+                    VALUES (:user_id, :filename, :page, :text, CAST(:embedding AS vector))
+                """),
+                {
+                    "user_id": user_id,
+                    "filename": meta["filename"],
+                    "page": meta["page"],
+                    "text": chunk,
+                    "embedding": str(embedding),
+                }
+            )
+        conn.commit()
+
+def search_chunks(user_id: int, query_embedding: list, mode: str, limit: int = 3):
+    table = get_table_name(mode)
+    with db_engine.connect() as conn:
+        results = conn.execute(
+            text(f"""
+                SELECT text, filename, page
+                FROM {table}
+                WHERE user_id = :user_id
+                ORDER BY embedding <=> CAST(:query_embedding AS vector)
+                LIMIT :limit
+            """),
+            {"user_id": user_id, "query_embedding": str(query_embedding), "limit": limit}
+        ).fetchall()
+    return results
+
+def list_user_documents(user_id: int, mode: str):
+    table = get_table_name(mode)
+    with db_engine.connect() as conn:
+        results = conn.execute(
+            text(f"SELECT DISTINCT filename FROM {table} WHERE user_id = :user_id"),
+            {"user_id": user_id}
+        ).fetchall()
+    return [row.filename for row in results]
+
+def delete_user_document(user_id: int, filename: str, mode: str) -> bool:
+    table = get_table_name(mode)
+    with db_engine.connect() as conn:
+        result = conn.execute(
+            text(f"DELETE FROM {table} WHERE user_id = :user_id AND filename = :filename"),
+            {"user_id": user_id, "filename": filename}
+        )
+        conn.commit()
+        return result.rowcount > 0
+
+# Pydantic models for requests
 class Question(BaseModel):
     query: str
     history: list[dict] = []
     mode: str = "cloud"
+
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 
 def needs_reformulation(query: str) -> bool:
     trigger_words = ["it", "that", "this", "those", "these", "second", "first", "also", "previous", "again", "more"]
@@ -74,32 +134,51 @@ def needs_reformulation(query: str) -> bool:
 def health_check():
     return {"status": "running"}
 
+@app.post("/signup")
+async def signup(request: SignupRequest):
+    with db_engine.connect() as conn:
+        existing = conn.execute(
+            text("SELECT id FROM users WHERE email = :email"),
+            {"email": request.email}
+        ).fetchone()
+        if existing:
+            return {"error": "An account with this email already exists."}
+        hashed = hash_password(request.password)
+        result = conn.execute(
+            text("INSERT INTO users (email, hashed_password) VALUES (:email, :hashed) RETURNING id"),
+            {"email": request.email, "hashed": hashed}
+        )
+        user_id = result.fetchone()[0]
+        conn.commit()
+    token = create_access_token(user_id, request.email)
+    return {"token": token, "email": request.email}
+
+@app.post("/login")
+async def login(request: LoginRequest):
+    with db_engine.connect() as conn:
+        user = conn.execute(
+            text("SELECT id, hashed_password FROM users WHERE email = :email"),
+            {"email": request.email}
+        ).fetchone()
+    if not user or not verify_password(request.password, user.hashed_password):
+        return {"error": "Invalid email or password."}
+    token = create_access_token(user.id, request.email)
+    return {"token": token, "email": request.email}
+
 @app.get("/documents")
-def list_documents(mode: str = "cloud"):
-    target_collection = get_collection(mode)
-    all_data = target_collection.get()
-    filenames = set()
-    if all_data and "metadatas" in all_data and all_data["metadatas"]:
-        for metadata in all_data["metadatas"]:
-            if metadata and "filename" in metadata:
-                filenames.add(metadata["filename"])
-    return {"documents": list(filenames)}
+def list_documents(mode: str = "cloud", current_user: dict = Depends(get_current_user)):
+    filenames = list_user_documents(current_user["user_id"], mode)
+    return {"documents": filenames}
 
 @app.delete("/documents/{filename}")
-async def delete_document(filename: str, mode: str = "cloud"):
-    target_collection = get_collection(mode)
-    try:
-        existing = target_collection.get(where={"filename": filename})
-        if not existing["ids"]:
-            return {"error": f'No document found matching "{filename}".'}
-            
-        target_collection.delete(where={"filename": filename})
-        return {"success": True, "message": f"Deleted {filename} successfully."}
-    except Exception as e:
-        return {"error": str(e)}
+async def delete_document(filename: str, mode: str = "cloud", current_user: dict = Depends(get_current_user)):
+    deleted = delete_user_document(current_user["user_id"], filename, mode)
+    if not deleted:
+        return {"error": f'No document found matching "{filename}".'}
+    return {"success": True, "message": f"Deleted {filename} successfully."}
 
 @app.post("/upload")
-async def upload_pdf(file: UploadFile = File(...), mode: str = Form("cloud")):
+async def upload_pdf(file: UploadFile = File(...), mode: str = Form("cloud"), current_user: dict = Depends(get_current_user)):
     if not file.filename.lower().endswith(".pdf"):
         return {"error": "Only PDF files are supported."}
     
@@ -148,21 +227,12 @@ async def upload_pdf(file: UploadFile = File(...), mode: str = Form("cloud")):
     except RuntimeError as e:
         return {"error": str(e)}
 
-    chunk_ids = [str(uuid.uuid4()) for _ in all_chunks]
-    target_collection = get_collection(mode)
-    
-    target_collection.add(
-        documents=all_chunks,
-        embeddings=embeddings,
-        metadatas=all_metadatas,
-        ids=chunk_ids
-    )
+    store_chunks(current_user["user_id"], file.filename, all_chunks, all_metadatas, embeddings, mode)
     
     result = {
         "filename": file.filename,
         "num_pages": len(reader.pages),
         "num_chunks": len(all_chunks),
-        "total_stored_in_db": target_collection.count(),
         "mode": mode
     }
 
@@ -172,8 +242,7 @@ async def upload_pdf(file: UploadFile = File(...), mode: str = Form("cloud")):
     return result
 
 @app.post("/ask")
-async def ask_question(question: Question):
-    target_collection = get_collection(question.mode)
+async def ask_question(question: Question, current_user: dict = Depends(get_current_user)):
     search_query = question.query
 
     # Step 1: Reformulate follow-up questions using history context if needed
@@ -210,14 +279,10 @@ Follow-up question: {question.query}"""
     except RuntimeError as e:
         return {"question": question.query, "answer": str(e), "sources": []}
 
-    # Step 3: Query target ChromaDB collection for top results and metadatas
-    results = target_collection.query(
-        query_embeddings=[query_embedding],
-        n_results=3
-    )
-    
-    retrieved_chunks = results["documents"][0] if results["documents"] and len(results["documents"]) > 0 else []
-    retrieved_metadatas = results["metadatas"][0] if results["metadatas"] and len(results["metadatas"]) > 0 else []
+    # Step 3: Query target pgvector table for top results
+    rows = search_chunks(current_user["user_id"], query_embedding, question.mode)
+    retrieved_chunks = [row.text for row in rows]
+    retrieved_metadatas = [{"filename": row.filename, "page": row.page} for row in rows]
 
     # Step 4: Handle empty database or no matches
     if not retrieved_chunks:
