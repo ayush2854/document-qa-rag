@@ -48,3 +48,21 @@ with engine.connect() as conn:
             conn.execute(text(statement))
     conn.commit()
     print("Schema created successfully")
+
+ADD_CONVERSATIONS_SQL = """
+CREATE TABLE IF NOT EXISTS conversations (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL DEFAULT 'New Chat',
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+ALTER TABLE chat_history ADD COLUMN IF NOT EXISTS conversation_id INTEGER REFERENCES conversations(id) ON DELETE CASCADE;
+"""
+
+with engine.connect() as conn:
+    for statement in ADD_CONVERSATIONS_SQL.strip().split(";"):
+        if statement.strip():
+            conn.execute(text(statement))
+    conn.commit()
+    print("Conversations table added successfully")
