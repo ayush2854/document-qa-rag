@@ -15,13 +15,32 @@ interface Toast {
   type: 'success' | 'error'
 }
 
+interface User {
+  email: string
+}
+
+interface Conversation {
+  id: number
+  title: string
+  created_at: string
+}
+
 function App() {
+  const [token, setToken] = useState<string | null>(localStorage.getItem('token'))
+  const [user, setUser] = useState<User | null>(null)
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login')
+  const [authEmail, setAuthEmail] = useState('')
+  const [authPassword, setAuthPassword] = useState('')
+  const [authLoading, setAuthLoading] = useState(false)
+
   const [documents, setDocuments] = useState<string[]>([])
   const [messages, setMessages] = useState<Message[]>([])
   const [question, setQuestion] = useState('')
   const [asking, setAsking] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [mode, setMode] = useState<'cloud' | 'local'>('cloud')
+  const [currentConversationId, setCurrentConversationId] = useState<number | null>(null)
+  const [conversations, setConversations] = useState<Conversation[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -37,19 +56,86 @@ function App() {
     }, 4000)
   }
 
+  const handleAuth = async () => {
+    if (!authEmail.trim() || !authPassword.trim()) return
+    setAuthLoading(true)
+    try {
+      const response = await fetch(`${API_URL}/${authMode}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: authEmail, password: authPassword }),
+      })
+      const data = await response.json()
+      if (data.error) {
+        showToast(data.error, 'error')
+      } else {
+        localStorage.setItem('token', data.token)
+        setToken(data.token)
+        setUser({ email: data.email })
+        showToast(authMode === 'login' ? 'Logged in successfully.' : 'Account created successfully.', 'success')
+      }
+    } catch (error) {
+      showToast('Something went wrong. Please try again.', 'error')
+    } finally {
+      setAuthLoading(false)
+    }
+  }
+
+  const handleLogout = () => {
+    localStorage.removeItem('token')
+    setToken(null)
+    setUser(null)
+    setCurrentConversationId(null)
+    setConversations([])
+    setMessages([])
+  }
+
+  const authFetch = async (url: string, options: RequestInit = {}) => {
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        ...(options.headers || {}),
+        Authorization: `Bearer ${token}`,
+      },
+    })
+    if (response.status === 401) {
+      handleLogout()
+      showToast('Session expired. Please log in again.', 'error')
+      throw new Error('Unauthorized')
+    }
+    return response
+  }
+
   const fetchDocuments = async (currentMode: string) => {
     try {
-      const response = await fetch(`${API_URL}/documents?mode=${currentMode}`)
+      const response = await authFetch(`${API_URL}/documents?mode=${currentMode}`)
       const data = await response.json()
-      setDocuments(data.documents)
+      setDocuments(data.documents ?? [])
     } catch (error) {
       console.error('Failed to fetch documents:', error)
+      setDocuments([])
+    }
+  }
+
+  const fetchConversations = async () => {
+    try {
+      const response = await authFetch(`${API_URL}/conversations`)
+      const data = await response.json()
+      setConversations(data.conversations ?? [])
+    } catch (error) {
+      console.error('Failed to fetch conversations:', error)
     }
   }
 
   useEffect(() => {
-    fetchDocuments(mode)
-  }, [mode])
+    if (token) {
+      fetchDocuments(mode)
+    }
+  }, [mode, token])
+
+  useEffect(() => {
+    if (token) fetchConversations()
+  }, [token])
 
   // Close dropdown menu when clicking anywhere else
   useEffect(() => {
@@ -68,7 +154,7 @@ function App() {
     formData.append('file', file)
     formData.append('mode', mode)
     try {
-      const response = await fetch(`${API_URL}/upload`, { method: 'POST', body: formData })
+      const response = await authFetch(`${API_URL}/upload`, { method: 'POST', body: formData })
       const data = await response.json()
       if (data.error) {
         showToast(data.error, 'error')
@@ -91,7 +177,7 @@ function App() {
     setDocumentToDelete(null)
 
     try {
-      const response = await fetch(`${API_URL}/documents/${encodeURIComponent(filename)}?mode=${mode}`, {
+      const response = await authFetch(`${API_URL}/documents/${encodeURIComponent(filename)}?mode=${mode}`, {
         method: 'DELETE',
       })
       const data = await response.json()
@@ -121,8 +207,38 @@ function App() {
     }
   }
 
+  const startNewChat = () => {
+    setCurrentConversationId(null)
+    setMessages([])
+  }
+
+  const switchConversation = async (conversationId: number) => {
+    setCurrentConversationId(conversationId)
+    try {
+      const response = await authFetch(`${API_URL}/conversations/${conversationId}/messages`)
+      const data = await response.json()
+      setMessages(data.messages ?? [])
+    } catch (error) {
+      showToast('Failed to load conversation.', 'error')
+    }
+  }
+
   const handleAsk = async () => {
     if (!question.trim()) return
+
+    let conversationId = currentConversationId
+    if (!conversationId) {
+      try {
+        const convResponse = await authFetch(`${API_URL}/conversations`, { method: 'POST' })
+        const convData = await convResponse.json()
+        conversationId = convData.id
+        setCurrentConversationId(conversationId)
+        await fetchConversations()
+      } catch (error) {
+        showToast('Failed to start conversation.', 'error')
+        return
+      }
+    }
 
     const userMessage: Message = { role: 'user', text: question }
     const currentHistory = messages.map(m => ({ role: m.role, text: m.text }))
@@ -132,17 +248,19 @@ function App() {
     setAsking(true)
 
     try {
-      const response = await fetch(`${API_URL}/ask`, {
+      const response = await authFetch(`${API_URL}/ask`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           query: userMessage.text,
           history: currentHistory,
           mode: mode,
+          conversation_id: conversationId,
         }),
       })
       const data = await response.json()
       setMessages((prev) => [...prev, { role: 'assistant', text: data.answer, sources: data.sources }])
+      await fetchConversations()
     } catch (error) {
       setMessages((prev) => [...prev, { role: 'assistant', text: 'Something went wrong. Please try again.' }])
     } finally {
@@ -150,11 +268,83 @@ function App() {
     }
   }
 
+  if (!token) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-gray-50">
+        <div className="w-full max-w-sm bg-white rounded-xl shadow-md p-8">
+          <h1 className="text-lg font-semibold text-gray-900 mb-1">Document Q&A</h1>
+          <p className="text-sm text-gray-500 mb-6">{authMode === 'login' ? 'Log in to continue' : 'Create an account'}</p>
+          <input
+            type="email"
+            value={authEmail}
+            onChange={(e) => setAuthEmail(e.target.value)}
+            placeholder="Email"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <input
+            type="password"
+            value={authPassword}
+            onChange={(e) => setAuthPassword(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleAuth()}
+            placeholder="Password"
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <button
+            onClick={handleAuth}
+            disabled={authLoading}
+            className="w-full py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:bg-gray-300 transition mb-3"
+          >
+            {authLoading ? 'Please wait...' : authMode === 'login' ? 'Log In' : 'Sign Up'}
+          </button>
+          <button
+            onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
+            className="w-full text-xs text-gray-500 hover:text-gray-700"
+          >
+            {authMode === 'login' ? "Don't have an account? Sign up" : 'Already have an account? Log in'}
+          </button>
+          <div className="fixed bottom-4 right-4 space-y-2 z-50">
+            {toasts.map((toast) => (
+              <div key={toast.id} className={`px-4 py-3 rounded-lg shadow-lg text-sm text-white ${toast.type === 'success' ? 'bg-green-600' : 'bg-red-600'}`}>
+                {toast.message}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="h-screen flex bg-gray-50">
       {/* Sidebar */}
       <div className="w-72 bg-white border-r border-gray-200 flex flex-col p-4">
-        <h1 className="text-lg font-semibold text-gray-900 mb-4">Document Q&A</h1>
+        <h1 className="text-lg font-semibold text-gray-900 mb-2">Document Q&A</h1>
+
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-xs text-gray-500 truncate">{user?.email}</span>
+          <button onClick={handleLogout} className="text-xs text-gray-400 hover:text-red-600 transition">Logout</button>
+        </div>
+
+        <button
+          onClick={startNewChat}
+          className="w-full mb-3 px-3 py-2 rounded-lg border border-gray-200 text-sm font-medium text-gray-700 hover:bg-gray-50 transition"
+        >
+          + New Chat
+        </button>
+
+        <div className="mb-4 max-h-32 overflow-y-auto space-y-1">
+          {conversations.map((conv) => (
+            <button
+              key={conv.id}
+              onClick={() => switchConversation(conv.id)}
+              className={`w-full text-left px-3 py-2 rounded-lg text-sm truncate transition ${
+                currentConversationId === conv.id ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              {conv.title}
+            </button>
+          ))}
+        </div>
 
         {/* Mode Toggle Switch */}
         <div className="flex items-center gap-2 mb-1 p-1 bg-gray-100 rounded-lg">
