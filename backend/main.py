@@ -126,6 +126,10 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
+class UpdateConversationRequest(BaseModel):
+    title: str | None = None
+    pinned: bool | None = None
+
 def needs_reformulation(query: str) -> bool:
     trigger_words = ["it", "that", "this", "those", "these", "second", "first", "also", "previous", "again", "more"]
     words = query.lower().split()
@@ -170,21 +174,34 @@ async def login(request: LoginRequest):
 def create_conversation(current_user: dict = Depends(get_current_user)):
     with db_engine.connect() as conn:
         result = conn.execute(
-            text("INSERT INTO conversations (user_id) VALUES (:user_id) RETURNING id, title, created_at"),
+            text("INSERT INTO conversations (user_id) VALUES (:user_id) RETURNING id, title, pinned, created_at"),
             {"user_id": current_user["user_id"]}
         )
         row = result.fetchone()
         conn.commit()
-    return {"id": row.id, "title": row.title, "created_at": row.created_at.isoformat()}
+    return {"id": row.id, "title": row.title, "pinned": row.pinned, "created_at": row.created_at.isoformat()}
 
 @app.get("/conversations")
 def list_conversations(current_user: dict = Depends(get_current_user)):
     with db_engine.connect() as conn:
         rows = conn.execute(
-            text("SELECT id, title, created_at FROM conversations WHERE user_id = :user_id ORDER BY created_at DESC"),
+            text("""
+                SELECT id, title, pinned, created_at FROM conversations
+                WHERE user_id = :user_id
+                ORDER BY pinned DESC, created_at DESC
+            """),
             {"user_id": current_user["user_id"]}
         ).fetchall()
-    return {"conversations": [{"id": r.id, "title": r.title, "created_at": r.created_at.isoformat()} for r in rows]}
+    return {
+        "conversations": [
+            {
+                "id": r.id, 
+                "title": r.title, 
+                "pinned": r.pinned, 
+                "created_at": r.created_at.isoformat()
+            } for r in rows
+        ]
+    }
 
 @app.get("/conversations/{conversation_id}/messages")
 def get_conversation_messages(conversation_id: int, current_user: dict = Depends(get_current_user)):
@@ -200,6 +217,41 @@ def get_conversation_messages(conversation_id: int, current_user: dict = Depends
             {"cid": conversation_id}
         ).fetchall()
     return {"messages": [{"role": r.role, "text": r.text} for r in rows]}
+
+@app.patch("/conversations/{conversation_id}")
+def update_conversation(conversation_id: int, request: UpdateConversationRequest, current_user: dict = Depends(get_current_user)):
+    with db_engine.connect() as conn:
+        owner_check = conn.execute(
+            text("SELECT user_id FROM conversations WHERE id = :id"),
+            {"id": conversation_id}
+        ).fetchone()
+        if not owner_check or owner_check.user_id != current_user["user_id"]:
+            return {"error": "Conversation not found."}
+        if request.title is not None:
+            conn.execute(
+                text("UPDATE conversations SET title = :title WHERE id = :id"),
+                {"title": request.title, "id": conversation_id}
+            )
+        if request.pinned is not None:
+            conn.execute(
+                text("UPDATE conversations SET pinned = :pinned WHERE id = :id"),
+                {"pinned": request.pinned, "id": conversation_id}
+            )
+        conn.commit()
+    return {"success": True}
+
+@app.delete("/conversations/{conversation_id}")
+def delete_conversation(conversation_id: int, current_user: dict = Depends(get_current_user)):
+    with db_engine.connect() as conn:
+        owner_check = conn.execute(
+            text("SELECT user_id FROM conversations WHERE id = :id"),
+            {"id": conversation_id}
+        ).fetchone()
+        if not owner_check or owner_check.user_id != current_user["user_id"]:
+            return {"error": "Conversation not found."}
+        conn.execute(text("DELETE FROM conversations WHERE id = :id"), {"id": conversation_id})
+        conn.commit()
+    return {"success": True}
 
 @app.get("/documents")
 def list_documents(mode: str = "cloud", current_user: dict = Depends(get_current_user)):

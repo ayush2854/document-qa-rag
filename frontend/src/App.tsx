@@ -22,6 +22,7 @@ interface User {
 interface Conversation {
   id: number
   title: string
+  pinned: boolean
   created_at: string
 }
 
@@ -47,6 +48,11 @@ function App() {
   const [isDragging, setIsDragging] = useState(false)
   const [activeMenuDoc, setActiveMenuDoc] = useState<string | null>(null)
   const [documentToDelete, setDocumentToDelete] = useState<string | null>(null)
+
+  const [activeConvMenu, setActiveConvMenu] = useState<number | null>(null)
+  const [renamingConvId, setRenamingConvId] = useState<number | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [convToDelete, setConvToDelete] = useState<number | null>(null)
 
   const showToast = (message: string, type: 'success' | 'error') => {
     const id = Date.now()
@@ -137,9 +143,12 @@ function App() {
     if (token) fetchConversations()
   }, [token])
 
-  // Close dropdown menu when clicking anywhere else
+  // Close dropdown menus when clicking anywhere else
   useEffect(() => {
-    const handleClickOutside = () => setActiveMenuDoc(null)
+    const handleClickOutside = () => {
+      setActiveMenuDoc(null)
+      setActiveConvMenu(null)
+    }
     window.addEventListener('click', handleClickOutside)
     return () => window.removeEventListener('click', handleClickOutside)
   }, [])
@@ -220,6 +229,64 @@ function App() {
       setMessages(data.messages ?? [])
     } catch (error) {
       showToast('Failed to load conversation.', 'error')
+    }
+  }
+
+  const togglePin = async (conv: Conversation, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setActiveConvMenu(null)
+    try {
+      await authFetch(`${API_URL}/conversations/${conv.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pinned: !conv.pinned }),
+      })
+      await fetchConversations()
+    } catch (error) {
+      showToast('Failed to update pin.', 'error')
+    }
+  }
+
+  const startRename = (conv: Conversation, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setActiveConvMenu(null)
+    setRenamingConvId(conv.id)
+    setRenameValue(conv.title)
+  }
+
+  const confirmRename = async (convId: number) => {
+    if (!renameValue.trim()) {
+      setRenamingConvId(null)
+      return
+    }
+    try {
+      await authFetch(`${API_URL}/conversations/${convId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: renameValue.trim() }),
+      })
+      await fetchConversations()
+    } catch (error) {
+      showToast('Failed to rename.', 'error')
+    } finally {
+      setRenamingConvId(null)
+    }
+  }
+
+  const confirmDeleteConversation = async () => {
+    if (!convToDelete) return
+    const id = convToDelete
+    setConvToDelete(null)
+    try {
+      await authFetch(`${API_URL}/conversations/${id}`, { method: 'DELETE' })
+      if (currentConversationId === id) {
+        setCurrentConversationId(null)
+        setMessages([])
+      }
+      await fetchConversations()
+      showToast('Chat deleted.', 'success')
+    } catch (error) {
+      showToast('Failed to delete chat.', 'error')
     }
   }
 
@@ -332,17 +399,58 @@ function App() {
           + New Chat
         </button>
 
-        <div className="mb-4 max-h-32 overflow-y-auto space-y-1">
+        <div className="mb-4 max-h-48 overflow-y-auto space-y-1">
           {conversations.map((conv) => (
-            <button
+            <div
               key={conv.id}
-              onClick={() => switchConversation(conv.id)}
-              className={`w-full text-left px-3 py-2 rounded-lg text-sm truncate transition ${
+              onClick={() => renamingConvId !== conv.id && switchConversation(conv.id)}
+              className={`group relative flex items-center justify-between px-3 py-2 rounded-lg text-sm cursor-pointer transition ${
                 currentConversationId === conv.id ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-600 hover:bg-gray-50'
               }`}
             >
-              {conv.title}
-            </button>
+              {renamingConvId === conv.id ? (
+                <input
+                  autoFocus
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onBlur={() => confirmRename(conv.id)}
+                  onKeyDown={(e) => e.key === 'Enter' && confirmRename(conv.id)}
+                  onClick={(e) => e.stopPropagation()}
+                  className="flex-1 bg-white border border-blue-300 rounded px-1 text-sm focus:outline-none"
+                />
+              ) : (
+                <span className="truncate pr-2 flex items-center gap-1">
+                  {conv.pinned && <span title="Pinned">📌</span>}
+                  {conv.title}
+                </span>
+              )}
+              {renamingConvId !== conv.id && (
+                <div className="relative">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setActiveConvMenu(activeConvMenu === conv.id ? null : conv.id) }}
+                    className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-gray-700 transition p-1 rounded hover:bg-blue-100"
+                  >
+                    ⋮
+                  </button>
+                  {activeConvMenu === conv.id && (
+                    <div className="absolute right-0 mt-1 w-32 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-20 text-xs">
+                      <button onClick={(e) => togglePin(conv, e)} className="w-full text-left px-3 py-1.5 hover:bg-gray-50">
+                        {conv.pinned ? '📌 Unpin' : '📌 Pin'}
+                      </button>
+                      <button onClick={(e) => startRename(conv, e)} className="w-full text-left px-3 py-1.5 hover:bg-gray-50">
+                        ✏️ Rename
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setActiveConvMenu(null); setConvToDelete(conv.id) }}
+                        className="w-full text-left px-3 py-1.5 text-red-600 hover:bg-red-50 font-medium"
+                      >
+                        🗑️ Delete
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           ))}
         </div>
 
@@ -487,7 +595,7 @@ function App() {
         </div>
       </div>
 
-      {/* Custom Delete Confirmation Modal */}
+      {/* Custom Document Delete Confirmation Modal */}
       {documentToDelete && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-xl max-w-sm w-full p-6 space-y-4 animate-modal-in">
@@ -508,6 +616,20 @@ function App() {
               >
                 Delete
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Chat Delete Confirmation Modal */}
+      {convToDelete && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-sm w-full p-6 space-y-4 animate-modal-in">
+            <h3 className="text-base font-semibold text-gray-900">Delete this chat?</h3>
+            <p className="text-sm text-gray-500">This will permanently delete the conversation and all its messages.</p>
+            <div className="flex justify-end gap-3 pt-2">
+              <button onClick={() => setConvToDelete(null)} className="px-4 py-2 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-100 transition">Cancel</button>
+              <button onClick={confirmDeleteConversation} className="px-4 py-2 rounded-lg text-sm font-medium bg-red-600 text-white hover:bg-red-700 transition shadow-sm">Delete</button>
             </div>
           </div>
         </div>

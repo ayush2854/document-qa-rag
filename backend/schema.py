@@ -66,3 +66,10 @@ with engine.connect() as conn:
             conn.execute(text(statement))
     conn.commit()
     print("Conversations table added successfully")
+
+# --- STEP 1: Add pinned and updated_at columns ---
+with engine.connect() as conn:
+    conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pinned BOOLEAN DEFAULT FALSE;"))
+    conn.execute(text("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();"))
+    conn.commit()
+    print("Added pinned and updated_at columns")
